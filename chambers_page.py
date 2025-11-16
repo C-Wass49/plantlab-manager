@@ -8,7 +8,7 @@ def render_chambers_page(conn):
     """Affiche le plan des chambres avec heatmap + grille par étagère/position."""
     
     st.header("🗄️ Plan des chambres")
-    st.caption("Visualisation des emplacements : Chambre → Étagère (A-E) × Position")
+    st.caption("Visualisation des emplacements : Chambre → Étagère (A-E, Z) × Position")
 
     # ========== CHARGEMENT DES DONNÉES ==========
     query = """
@@ -35,6 +35,15 @@ def render_chambers_page(conn):
     if df.empty:
         st.info("Aucune série active dans la base.")
         return
+
+    # ========== FONCTION : COMPTER LES SÉRIES (strain_code, batch_lines) ==========
+    def count_series(df_subset: pd.DataFrame) -> int:
+        """
+        Compte le nombre de séries uniques définies comme couples (strain_code, batch_lines).
+        """
+        if df_subset.empty:
+            return 0
+        return df_subset[['strain_code', 'batch_lines']].drop_duplicates().shape[0]
 
     # ========== PARSING DES EMPLACEMENTS ==========
     VALID_SHELVES = "ABCDEZ"
@@ -97,15 +106,15 @@ def render_chambers_page(conn):
     parsed = df.apply(parse_location, axis=1)
     df = pd.concat([df, parsed], axis=1)
 
-    # ========== STATISTIQUES GLOBALES ==========
-    total_series = len(df)
-    parsed_series = df[df['location_type'] == 'standard'].shape[0]
-    chf_series = df[df['location_type'] == 'CHF'].shape[0]
-    unknown_series = df[df['location_type'] == 'unknown'].shape[0]
+    # ========== STATISTIQUES GLOBALES (AVEC NOUVELLE DÉFINITION DE SÉRIE) ==========
+    total_series = count_series(df)
+    parsed_series = count_series(df[df['location_type'] == 'standard'])
+    chf_series = count_series(df[df['location_type'] == 'CHF'])
+    unknown_series = count_series(df[df['location_type'] == 'unknown'])
     
     col1, col2, col3, col4 = st.columns(4)
     with col1:
-        st.metric("Total séries", total_series)
+        st.metric("Total séries (unique strain+line)", total_series)
     with col2:
         st.metric("Chambres standard", parsed_series)
     with col3:
@@ -115,7 +124,7 @@ def render_chambers_page(conn):
     
     # Debug
     if unknown_series > 0:
-        with st.expander(f"⚠️ {unknown_series} emplacements non parsés"):
+        with st.expander(f"⚠️ {unknown_series} séries (strain+line) avec emplacement non parsé"):
             st.dataframe(
                 df[df['location_type'] == 'unknown'][['chambre', 'emplacement', 'barcode', 'strain_code']].head(20),
                 use_container_width=True,
@@ -147,10 +156,11 @@ def render_chambers_page(conn):
         if selected_medium != 'Tous':
             df_filtered = df_filtered[df_filtered['medium_code'] == selected_medium]
         
-        st.caption(f"**{len(df_filtered)}** séries après filtres")
+        # 🔁 ICI : on affiche le nombre de séries uniques (strain_code, batch_lines)
+        st.caption(f"**{count_series(df_filtered)}** séries (couples souche+line) après filtres")
     
     # ========== SÉLECTION DE LA CHAMBRE ==========
-    chambres = sorted(df_filtered['chambre_num'].unique())
+    chambres = sorted(df_filtered['chambre_num'].dropna().unique())
     
     if not chambres:
         st.info("Aucune chambre disponible avec les filtres actuels.")
@@ -166,10 +176,10 @@ def render_chambers_page(conn):
     
     st.markdown(f"### Chambre {selected_chambre}")
     
-    # Stats
+    # Stats (avec nouvelle définition)
     col1, col2, col3 = st.columns(3)
     with col1:
-        st.metric("Séries", len(df_room))
+        st.metric("Séries (strain+line)", count_series(df_room))
     with col2:
         st.metric("Bocaux total", int(df_room['total_jars'].sum()))
     with col3:
@@ -211,7 +221,8 @@ def render_chambers_page(conn):
         if shelf_data.empty:
             continue
         
-        st.markdown(f"**📚 Étagère {shelf}** ({len(shelf_data)} séries)")
+        # 🔁 Compter les séries uniques sur cette étagère
+        st.markdown(f"**📚 Étagère {shelf}** ({count_series(shelf_data)} séries)")
         
         occupied_positions = sorted(shelf_data['position'].unique())
         
@@ -226,7 +237,6 @@ def render_chambers_page(conn):
         for i in range(0, len(positions_to_show), cols_per_row):
             positions_chunk = positions_to_show[i:i+cols_per_row]
             
-            # Créer autant de colonnes que nécessaire, avec largeur égale
             cols = st.columns(cols_per_row)
             
             for col_idx, pos in enumerate(positions_chunk):
@@ -234,6 +244,7 @@ def render_chambers_page(conn):
                     items = shelf_data[shelf_data['position'] == pos]
                     
                     if not items.empty:
+                        # Ici on garde la logique par ligne pour l’affichage détaillé
                         row = items.iloc[0]
                         nb_items = len(items)
                         
@@ -241,7 +252,6 @@ def render_chambers_page(conn):
                         series = str(row['batch_lines']) if pd.notna(row['batch_lines']) else "?"
                         jars = int(row['total_jars']) if pd.notna(row['total_jars']) else 0
                         
-                        # Container avec bordure verte
                         st.markdown(f"""
                             <div style='background: linear-gradient(135deg, #e8f5e9 0%, #c8e6c9 100%); 
                                         padding: 6px; border-radius: 6px; border: 2px solid #66bb6a;
@@ -262,7 +272,6 @@ def render_chambers_page(conn):
                             </div>
                         """, unsafe_allow_html=True)
                     else:
-                        # Position vide
                         st.markdown(f"""
                             <div style='background-color: #fafafa; padding: 6px; 
                                         border-radius: 6px; border: 2px solid #e0e0e0;
